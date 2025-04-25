@@ -281,9 +281,14 @@ def find_time_to_reach(df, column, threshold, is_heat_analysis=True):
                     time_seconds = first_index
                 
                 # Format as time (MM:SS)
-                minutes = int(time_seconds) // 60
-                seconds = int(time_seconds) % 60
-                return f"{minutes}:{seconds:02d} (sample {first_index})"
+
+                if pd.isna(time_seconds):
+                    return f"N/A (sample {first_index})"
+                else:
+                    minutes = int(time_seconds) // 60
+                    seconds = int(time_seconds) % 60
+                    return f"{minutes}:{seconds:02d} (sample {first_index})"
+               
             return "N/A"  # If threshold is never reached
         else:
             return "Non-numeric column"
@@ -794,20 +799,6 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
     plt.tight_layout()
     st.pyplot(fig)
 
-    import streamlit as st
-import pandas as pd
-import numpy as np
-import matplotlib.pyplot as plt
-import io
-from scipy import stats
-
-# Set page configuration
-st.set_page_config(page_title="Temperature Analysis Tool", layout="wide")
-
-# Rest of your functions, including process_data, find_time_to_reach, calculate_time_threshold, etc.
-# ...
-# (Keep all your existing code here)
-# ...
 
 # Complete the display_visualization_tab function that was cut off
 def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
@@ -981,7 +972,6 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
     st.pyplot(fig)
 
 # Add the main function - this is what was missing!
-# Modify the main function to handle multiple files
 
 def main():
     """
@@ -1073,12 +1063,14 @@ def main():
                     st.write(f"Processing file: **{uploaded_file.name}**")
                     st.write("Attempting to read file with pandas...")
                     buffer = io.StringIO(data_text)
-                    df = pd.read_csv(buffer, sep=delimiters[1], engine='python', skiprows=header_row_index)
+                    # FIX: Use header parameter correctly
+                    df = pd.read_csv(buffer, sep=delimiters[1], engine='python', header=header_row_index)
                     
                     # Apply column renaming if any columns were renamed
                     if column_renames:
-                        df = df.rename(columns=column_renames)
-                        st.write("Columns renamed successfully!")
+                        # Note: This still has the issue with generic column names vs. actual column names
+                       if new_column_names:
+                        df.columns = pd.Index(new_column_names + list(df.columns[len(new_column_names):]))
                     
                     st.write(f"Successfully read file with pandas. Shape: {df.shape}")
                     st.write("First 5 rows:")
@@ -1127,6 +1119,30 @@ def main():
         if not temp_columns:
             numeric_cols = df.select_dtypes(include=[np.number]).columns
             temp_columns = list(numeric_cols)[:4]
+        
+        # ADD: Manual column selection for visualization
+        # Get all numeric columns as options
+        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+        # Filter out columns that look like time
+        numeric_cols = [col for col in numeric_cols if not any(word in str(col).lower() 
+                                                             for word in ['sample', 'time', 'second', 'minute'])]
+        
+        # Default to the auto-detected temperature columns
+        default_selections = temp_columns if all(col in numeric_cols for col in temp_columns) else numeric_cols[:min(4, len(numeric_cols))]
+        
+        # Add multiselect for columns
+        st.header("Select Columns for Visualization")
+        selected_columns = st.multiselect(
+            "Choose which columns to include in graphs and analysis:",
+            options=numeric_cols,
+            default=default_selections
+        )
+        
+        # Update temp_columns with user selection if any are selected
+        if selected_columns:
+            temp_columns = selected_columns
+        
+        st.write(f"Using columns for visualization: {', '.join(temp_columns)}")
         
         # Display basic information
         st.header("Temperature Analysis")
