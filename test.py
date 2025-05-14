@@ -362,42 +362,49 @@ def calculate_statistics(df, is_heat_analysis=True):
         st.error("No data to analyze. DataFrame is empty.")
         return {}
         
-    # Get temperature column names - use first 4 channels
-    temp_columns = []
-    channel_count = 0
+    # Instead of finding temperature columns, use the ones already set in session_state
+    temp_columns = st.session_state.get('temp_columns', [])
     
-    # First, try to find columns with expected temperature names
-    for col in df.columns:
-        col_str = str(col).lower()
-        # Look for columns with temperature-related names
-        if ('channel' in col_str and ('1' in col_str or '2' in col_str or '3' in col_str or '4' in col_str)) or \
-           ('temp' in col_str) or ('°c' in col_str) or ('temperature' in col_str):
-            # Make sure it's numeric
-            if pd.api.types.is_numeric_dtype(df[col]):
-                temp_columns.append(col)
-                channel_count += 1
-                if channel_count >= 4:  # Limit to 4 channels
-                    break
+    # If no columns were set, try to find some reasonable defaults
+    if not temp_columns:
+        # Get temperature column names - use first 4 channels
+        temp_columns = []
+        channel_count = 0
+        
+        # First, try to find columns with expected temperature names
+        for col in df.columns:
+            col_str = str(col).lower()
+            # Look for columns with temperature-related names
+            if ('channel' in col_str and ('1' in col_str or '2' in col_str or '3' in col_str or '4' in col_str)) or \
+               ('temp' in col_str) or ('°c' in col_str) or ('temperature' in col_str):
+                # Make sure it's numeric
+                if pd.api.types.is_numeric_dtype(df[col]):
+                    temp_columns.append(col)
+                    channel_count += 1
+                    if channel_count >= 4:  # Limit to 4 channels
+                        break
+        
+        # If we couldn't find 4 columns that way, use the first 4 numeric columns
+        if channel_count < 4:
+            st.warning(f"Only found {channel_count} specific temperature columns. Adding more from numeric columns.")
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            for col in numeric_cols:
+                if col not in temp_columns and channel_count < 4:
+                    # Skip columns that look like sample numbers or time
+                    col_str = str(col).lower()
+                    if 'sample' in col_str or 'time' in col_str or 'second' in col_str or 'minute' in col_str:
+                        continue
+                    temp_columns.append(col)
+                    channel_count += 1
+                    if channel_count >= 4:
+                        break
+    # REPLACE THIS SECTION - End
     
-    # If we couldn't find 4 columns that way, use the first 4 numeric columns
-    if channel_count < 4:
-        st.warning(f"Only found {channel_count} specific temperature columns. Adding more from numeric columns.")
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        for col in numeric_cols:
-            if col not in temp_columns and channel_count < 4:
-                # Skip columns that look like sample numbers or time
-                col_str = str(col).lower()
-                if 'sample' in col_str or 'time' in col_str or 'second' in col_str or 'minute' in col_str:
-                    continue
-                temp_columns.append(col)
-                channel_count += 1
-                if channel_count >= 4:
-                    break
-    
-    st.write(f"Using channels: {temp_columns}")
+    st.write(f"Using channels for statistics: {temp_columns}")
     
     # Store the columns for use in other functions
     st.session_state['temp_columns'] = temp_columns
+    
     
     # Calculate statistics for each column
     for col in temp_columns:
@@ -1141,6 +1148,8 @@ def main():
         # Update temp_columns with user selection if any are selected
         if selected_columns:
             temp_columns = selected_columns
+            # Add this line to save selected columns to session state
+            st.session_state['temp_columns'] = temp_columns
         
         st.write(f"Using columns for visualization: {', '.join(temp_columns)}")
         
