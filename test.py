@@ -232,6 +232,143 @@ def process_data(data_text, header_row_index=3, data_start_row_index=5, column_r
         
         return df_cleaned, experiment_info
 
+def merge_selected_files(processed_files, file_selections, column_selections):
+    """
+    Merge selected columns from multiple files into a single DataFrame.
+    
+    Args:
+        processed_files (dict): Dictionary of processed file data
+        file_selections (list): List of selected file names to merge
+        column_selections (dict): Dictionary mapping file names to selected columns
+        
+    Returns:
+        tuple: (DataFrame of merged data, combined experiment info string)
+    """
+    
+    if not file_selections:
+        st.error("No files selected for merging")
+        return pd.DataFrame(), "No files selected for merging"
+    
+    # Create a new empty DataFrame for the merged result
+    merged_df = pd.DataFrame()
+    experiment_infos = []
+    
+    # Debug information
+    st.write("Selected files for merging:", file_selections)
+    total_selected_columns = sum(len(column_selections.get(file, [])) for file in file_selections)
+    st.write(f"Total selected columns across all files: {total_selected_columns}")
+    
+    # Track the longest DataFrame to ensure all have same length
+    max_length = 0
+    longest_df = None
+    
+    # First pass: find the longest DataFrame
+    for file_name in file_selections:
+        if file_name in processed_files:
+            file_data = processed_files[file_name]
+            df = file_data['df']
+            # Get length of this DataFrame
+            if len(df) > max_length:
+                max_length = len(df)
+                longest_df = df
+                st.write(f"Longest DataFrame: {file_name} with {max_length} rows")
+    
+    if longest_df is None:
+        st.error("No valid data found in selected files")
+        return pd.DataFrame(), "No valid data found in selected files"
+    
+    # Create time/sample column for the merged data
+    # Look for existing time/sample column in the longest DataFrame
+    sample_col = None
+    for col in longest_df.columns:
+        col_lower = str(col).lower()
+        if 'sample' in col_lower or 'time' in col_lower or 'second' in col_lower:
+            sample_col = col
+            break
+    
+    # If found, add it to the merged DataFrame
+    if sample_col is not None:
+        st.write(f"Using existing sample column: {sample_col}")
+        merged_df['Sample'] = pd.to_numeric(longest_df[sample_col], errors='coerce')
+    else:
+        # Create a sample column based on index
+        st.write("Creating new sample column based on index")
+        merged_df['Sample'] = range(max_length)
+    
+    # Second pass: merge data
+    for file_name in file_selections:
+        if file_name in processed_files:
+            file_data = processed_files[file_name]
+            df = file_data['df']
+            exp_info = file_data['experiment_info']
+            experiment_infos.append(exp_info)
+            
+            # Get selected columns for this file
+            selected_cols = column_selections.get(file_name, [])
+            st.write(f"Selected columns for {file_name}: {selected_cols}")
+            
+            if not selected_cols:
+                st.warning(f"No columns selected for {file_name}")
+                continue
+            
+            # Check if the DataFrame has any of the selected columns
+            existing_cols = [col for col in selected_cols if col in df.columns]
+            if not existing_cols:
+                st.warning(f"None of the selected columns exist in {file_name}")
+                continue
+            
+            st.write(f"Found columns in {file_name}: {existing_cols}")
+            
+            # Handle length differences - pad shorter DataFrames with NaN
+            if len(df) < max_length:
+                # Create empty rows to match lengths
+                pad_length = max_length - len(df)
+                st.write(f"Padding {file_name} with {pad_length} rows")
+                pad_df = pd.DataFrame(np.nan, index=range(pad_length), columns=df.columns)
+                df = pd.concat([df, pad_df], ignore_index=True)
+            elif len(df) > max_length:
+                # Truncate longer DataFrames
+                st.write(f"Truncating {file_name} to {max_length} rows")
+                df = df.iloc[:max_length]
+            
+            # Add columns to merged DataFrame with prefix to avoid naming conflicts
+            for col in existing_cols:
+                # Create a unique column name by prefixing with shortened file name
+                # Extract just filename without extension
+                file_prefix = file_name.split('.')[0]
+                if len(file_prefix) > 10:
+                    file_prefix = file_prefix[:10]
+                new_col_name = f"{file_prefix}_{col}"
+                
+                # Add to merged DataFrame and convert to numeric
+                try:
+                    # Make sure to convert to numeric
+                    merged_df[new_col_name] = pd.to_numeric(df[col], errors='coerce')
+                    st.write(f"Added column {new_col_name} with {merged_df[new_col_name].count()} non-NaN values")
+                except Exception as e:
+                    st.error(f"Error adding column {col} from {file_name}: {str(e)}")
+    
+    # Create combined experiment info
+    combined_info = "Combined data from: " + ", ".join(experiment_infos)
+    
+    # Final check - make sure we have more than just the Sample column
+    if merged_df.shape[1] <= 1:
+        st.error("Failed to create merged dataset - no data columns were added")
+        return pd.DataFrame(), "No valid data columns were added"
+    
+    # Check for valid numeric data
+    numeric_cols = merged_df.select_dtypes(include=[np.number]).columns.tolist()
+    numeric_cols = [col for col in numeric_cols if col != 'Sample']
+    
+    if not numeric_cols:
+        st.error("No valid numeric data columns in combined dataset")
+        return pd.DataFrame(), "No valid numeric data columns"
+    
+    st.write(f"Successfully created combined dataset with {len(numeric_cols)} numeric columns")
+    st.write("Preview of combined data:")
+    st.write(merged_df.head())
+    
+    return merged_df, combined_info
 
 def find_time_to_reach(df, column, threshold, is_heat_analysis=True):
     """
@@ -273,6 +410,7 @@ def find_time_to_reach(df, column, threshold, is_heat_analysis=True):
                         sample_col = col
                         break
                 
+                # Fix indentation issue here - these statements should be outside the for loop
                 if sample_col is not None and pd.api.types.is_numeric_dtype(df[sample_col]):
                     # Use the actual sample number from the data
                     time_seconds = float(df.iloc[first_index][sample_col])
@@ -281,7 +419,6 @@ def find_time_to_reach(df, column, threshold, is_heat_analysis=True):
                     time_seconds = first_index
                 
                 # Format as time (MM:SS)
-
                 if pd.isna(time_seconds):
                     return f"N/A (sample {first_index})"
                 else:
@@ -362,7 +499,7 @@ def calculate_statistics(df, is_heat_analysis=True):
         st.error("No data to analyze. DataFrame is empty.")
         return {}
         
-    # Instead of finding temperature columns, use the ones already set in session_state
+    # Get temperature columns from session state if available
     temp_columns = st.session_state.get('temp_columns', [])
     
     # If no columns were set, try to find some reasonable defaults
@@ -398,7 +535,6 @@ def calculate_statistics(df, is_heat_analysis=True):
                     channel_count += 1
                     if channel_count >= 4:
                         break
-    # REPLACE THIS SECTION - End
     
     st.write(f"Using channels for statistics: {temp_columns}")
     
@@ -477,16 +613,22 @@ def plot_temperature_trends(df, temp_columns):
                 transform=ax.transAxes, fontsize=14)
         return fig
     
-    fig, ax = plt.subplots(figsize=(12, 6))
+    # Limit figure size to prevent oversized plots
+    figsize = (min(12, len(df) * 0.01), 6)
+    fig, ax = plt.subplots(figsize=figsize)
     
     # Create x-axis for time (seconds)
     x = np.arange(len(df))
+    
+    # Determine appropriate marker frequency to avoid overcrowding
+    marker_every = max(1, len(x) // 100)
     
     # Plot each temperature column that exists
     for col in temp_columns:
         if col in df.columns and not df[col].isna().all():
             try:
-                ax.plot(x, df[col], label=col)
+                # Use markevery to reduce the number of markers for large datasets
+                ax.plot(x, df[col], label=col, markevery=marker_every)
             except Exception as e:
                 st.warning(f"Could not plot {col}: {str(e)}")
     
@@ -498,7 +640,7 @@ def plot_temperature_trends(df, temp_columns):
     
     return fig
 
-
+# Adding the missing display_data_tab function
 def display_data_tab(df, temp_columns):
     """
     Display data in the Data tab.
@@ -507,23 +649,31 @@ def display_data_tab(df, temp_columns):
         df (DataFrame): Processed temperature data
         temp_columns (list): List of temperature columns
     """
-    st.subheader("Temperature Data")
+    st.subheader("Raw Data")
     
-    # Display only the relevant columns
-    if not temp_columns:
-        st.dataframe(df)
-    else:
-        st.dataframe(df[temp_columns])
+    # Display shape information
+    st.write(f"Data shape: {df.shape} (rows, columns)")
     
-    # Allow download of processed data
+    # Show data types
+    st.subheader("Data Types")
+    st.write(df.dtypes)
+    
+    # Display summary statistics
+    st.subheader("Summary Statistics")
+    st.write(df.describe())
+    
+    # Show the actual data
+    st.subheader("Data Preview")
+    st.dataframe(df.head(100))
+    
+    # Allow downloading the full data
     csv = df.to_csv(index=False)
     st.download_button(
-        label="Download processed data as CSV",
+        label="Download Full Data as CSV",
         data=csv,
-        file_name='processed_temperature_data.csv',
+        file_name='temperature_data.csv',
         mime='text/csv',
     )
-
 
 def display_statistics_tab(df, stats, temp_columns, is_heat_analysis=True):
     """
@@ -637,21 +787,31 @@ def display_statistics_tab(df, stats, temp_columns, is_heat_analysis=True):
 
 
 def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
-    """
-    Display visualizations in the Visualization tab.
-    
-    Args:
-        df (DataFrame): Processed temperature data
-        stats (dict): Statistics calculated for each channel
-        temp_columns (list): List of temperature columns
-        is_heat_analysis (bool): Whether to display heat or cold analysis metrics
-    """
+    """Display visualizations in the Visualization tab."""
     analysis_type = "Heat" if is_heat_analysis else "Cold"
     st.subheader(f"Temperature Visualization ({analysis_type} Analysis)")
     
-    # Plot temperature trends
-    fig = plot_temperature_trends(df, temp_columns)
-    st.pyplot(fig)
+    # Set a reasonable maximum figure size and control DPI
+    max_figsize = 12
+    figure_dpi = 100
+    
+    # Limit the number of data points to prevent oversized plots
+    max_data_points = 10000
+    if len(df) > max_data_points:
+        st.warning(f"Dataset contains {len(df)} points, which may be too large for visualization. Downsampling to {max_data_points} points.")
+        # Use a simple downsampling by taking every nth row
+        sampling_rate = len(df) // max_data_points + 1
+        df_plot = df.iloc[::sampling_rate].copy()
+    else:
+        df_plot = df.copy()
+    
+    # Plot temperature trends with controlled figure size and DPI
+    try:
+        # Modified function call to plot_temperature_trends 
+        fig = plot_temperature_trends(df_plot, temp_columns)
+        st.pyplot(fig, dpi=figure_dpi)
+    except Exception as e:
+        st.error(f"Error creating temperature trends plot: {str(e)}")
     
     # Additional visualizations
     st.subheader("Temperature Distribution")
@@ -663,93 +823,112 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
     if not available_temp_cols:
         st.warning("No temperature columns available for histogram visualization.")
     else:
-        # Create a subplot for histograms of each temperature column
-        fig, axes = plt.subplots(1, len(available_temp_cols), figsize=(5 * len(available_temp_cols), 5))
-        
-        # Handle case with only one column
-        if len(available_temp_cols) == 1:
-            axes = [axes]
-        
-        for i, col in enumerate(available_temp_cols):
-            try:
-                axes[i].hist(df[col], bins=20, alpha=0.7)
-                axes[i].set_title(f'{col} Distribution')
-                axes[i].set_xlabel('Temperature (°C)')
-                axes[i].set_ylabel('Frequency')
+        try:
+            # Limit the number of columns to display to prevent oversized figures
+            max_cols_to_display = 4
+            if len(available_temp_cols) > max_cols_to_display:
+                st.warning(f"Limiting histogram display to {max_cols_to_display} columns.")
+                display_cols = available_temp_cols[:max_cols_to_display]
+            else:
+                display_cols = available_temp_cols
                 
-                # Add reference lines if stats are available
-                if col in stats:
-                    if 'Average' in stats[col]:
-                        axes[i].axvline(stats[col]['Average'], color='r', linestyle='--', label='Mean')
-                    if 'Mode' in stats[col]:
-                        axes[i].axvline(stats[col]['Mode'], color='g', linestyle='--', label='Mode')
-                    axes[i].legend()
-            except Exception as e:
-                st.error(f"Error creating histogram for {col}: {str(e)}")
-        
-        plt.tight_layout()
-        st.pyplot(fig)
+            # Create a subplot for histograms with controlled size
+            fig_width = min(5 * len(display_cols), max_figsize)
+            fig, axes = plt.subplots(1, len(display_cols), figsize=(fig_width, 5), dpi=figure_dpi)
+            
+            # Handle case with only one column
+            if len(display_cols) == 1:
+                axes = [axes]
+            
+            for i, col in enumerate(display_cols):
+                try:
+                    axes[i].hist(df_plot[col], bins=20, alpha=0.7)
+                    axes[i].set_title(f'{col} Distribution')
+                    axes[i].set_xlabel('Temperature (°C)')
+                    axes[i].set_ylabel('Frequency')
+                    
+                    # Add reference lines if stats are available
+                    if col in stats:
+                        if 'Average' in stats[col]:
+                            axes[i].axvline(stats[col]['Average'], color='r', linestyle='--', label='Mean')
+                        if 'Mode' in stats[col]:
+                            axes[i].axvline(stats[col]['Mode'], color='g', linestyle='--', label='Mode')
+                        axes[i].legend()
+                except Exception as e:
+                    st.error(f"Error creating histogram for {col}: {str(e)}")
+            
+            plt.tight_layout()
+            st.pyplot(fig, dpi=figure_dpi)
+        except Exception as e:
+            st.error(f"Error creating histogram plots: {str(e)}")
     
-    # Add heating/cooling rate visualization
+    # Add temperature vs time visualization with controlled size
     st.subheader("Temperature vs Time")
     
-    # Create a line plot showing temperature over time
-    fig, ax = plt.subplots(figsize=(12, 6))
+    try:
+        # Create a line plot showing temperature over time with limited size
+        fig, ax = plt.subplots(figsize=(min(12, max_figsize), min(8, max_figsize)), dpi=figure_dpi)
+        
+        # Create x-axis for time (seconds)
+        x = np.arange(len(df_plot))
+        
+        for col in available_temp_cols:
+            try:
+                ax.plot(x, df_plot[col], marker='.', linestyle='-', label=col, markevery=max(1, len(x)//100))
+            except Exception as e:
+                st.warning(f"Could not plot {col}: {str(e)}")
+        
+        # Add threshold lines
+        threshold_list = st.session_state.get('threshold_list', [29, 30, 31, 32, 33, 34])
+        for t in threshold_list:
+            ax.axhline(y=t, color='gray', linestyle='--', alpha=0.5)
+            ax.text(x.max(), t, f"{t}°C", va='center', ha='left', fontsize=8)
+        
+        ax.set_xlabel('Time (seconds)')
+        ax.set_ylabel('Temperature (°C)')
+        ax.set_title('Temperature Change Over Time')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        st.pyplot(fig, dpi=figure_dpi)
+    except Exception as e:
+        st.error(f"Error creating temperature vs time plot: {str(e)}")
     
-    # Create x-axis for time (seconds)
-    x = np.arange(len(df))
-    
-    for col in available_temp_cols:
-        try:
-            ax.plot(x, df[col], marker='.', linestyle='-', label=col)
-        except Exception as e:
-            st.warning(f"Could not plot {col}: {str(e)}")
-    
-    # Add threshold lines
-    threshold_list = st.session_state.get('threshold_list', [29, 30, 31, 32, 33, 34])
-    for t in threshold_list:
-        ax.axhline(y=t, color='gray', linestyle='--', alpha=0.5)
-        ax.text(x.max(), t, f"{t}°C", va='center', ha='left', fontsize=8)
-    
-    ax.set_xlabel('Time (seconds)')
-    ax.set_ylabel('Temperature (°C)')
-    ax.set_title('Temperature Change Over Time')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    st.pyplot(fig)
-    
-    # Add rate of temperature change visualization
+    # Add rate of temperature change visualization with controlled size
     st.subheader("Rate of Temperature Change")
     
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    for col in available_temp_cols:
-        try:
-            # Calculate temperature change rate (°C per second)
-            temp_values = df[col]
-            
-            # Calculate temperature change rate using rolling window
-            temp_diff = temp_values.diff()
-            
-            # Plot the rate of change
-            valid_mask = ~temp_diff.isna()
-            ax.plot(x[valid_mask], temp_diff[valid_mask], marker='.', label=f"{col} Rate")
-        except Exception as e:
-            st.warning(f"Could not calculate rate for {col}: {str(e)}")
-    
-    ax.set_xlabel('Time (seconds)')
-    ax.set_ylabel('Rate of Change (°C/second)')
-    ax.set_title('Temperature Change Rate')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    # Add horizontal line at y=0
-    ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
-    
-    plt.tight_layout()
-    st.pyplot(fig)
+    try:
+        fig, ax = plt.subplots(figsize=(min(12, max_figsize), min(6, max_figsize)), dpi=figure_dpi)
+        
+        for col in available_temp_cols:
+            try:
+                # Calculate temperature change rate (°C per second)
+                temp_values = df_plot[col]
+                
+                # Calculate temperature change rate using rolling window
+                temp_diff = temp_values.diff()
+                
+                # Plot the rate of change
+                valid_mask = ~temp_diff.isna()
+                ax.plot(x[valid_mask], temp_diff[valid_mask], marker='.', 
+                        label=f"{col} Rate", markevery=max(1, len(x)//100))
+            except Exception as e:
+                st.warning(f"Could not calculate rate for {col}: {str(e)}")
+        
+        ax.set_xlabel('Time (seconds)')
+        ax.set_ylabel('Rate of Change (°C/second)')
+        ax.set_title('Temperature Change Rate')
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+        
+        # Add horizontal line at y=0
+        ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
+        
+        plt.tight_layout()
+        st.pyplot(fig, dpi=figure_dpi)
+    except Exception as e:
+        st.error(f"Error creating rate of change plot: {str(e)}")
     
     # Add time-above/below-threshold visualization
     if is_heat_analysis:
@@ -762,227 +941,56 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
     # Get thresholds
     threshold_list = st.session_state.get('threshold_list', [29, 30, 31, 32, 33, 34])
     
-    # Create a bar chart showing time spent above/below each threshold for each channel
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    # Number of channels and thresholds
-    num_channels = len(available_temp_cols)
-    num_thresholds = len(threshold_list)
-    
-    # Set up bar positions
-    bar_width = 0.8 / num_channels
-    positions = np.arange(num_thresholds)
-    
-    for i, col in enumerate(available_temp_cols):
-        if col in stats:
-            # Extract time spent above/below each threshold (in seconds)
-            times_above = []
-            for temp in threshold_list:
-                key = time_key.format(temp=temp)
-                if key in stats[col]:
-                    # Try to extract samples from format like "m:ss (n samples)"
-                    time_str = stats[col][key]
-                    try:
-                        samples = int(time_str.split('(')[1].split(' ')[0])
-                    except:
-                        samples = 0
-                    times_above.append(samples)
-                else:
-                    times_above.append(0)
-            
-            # Plot the bars
-            bar_pos = positions + (i - num_channels/2 + 0.5) * bar_width
-            ax.bar(bar_pos, times_above, width=bar_width, label=col)
-    
-    # Set labels and title
-    ax.set_xlabel('Temperature Threshold (°C)')
-    ax.set_ylabel('Time (seconds)')
-    ax.set_title(f'Time Spent {"Above" if is_heat_analysis else "Below"} Temperature Thresholds')
-    ax.set_xticks(positions)
-    ax.set_xticklabels([f"{temp}°C" for temp in threshold_list])
-    ax.legend()
-    ax.grid(True, alpha=0.3, axis='y')
-    
-    plt.tight_layout()
-    st.pyplot(fig)
-
-
-# Complete the display_visualization_tab function that was cut off
-def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
-    """
-    Display visualizations in the Visualization tab.
-    
-    Args:
-        df (DataFrame): Processed temperature data
-        stats (dict): Statistics calculated for each channel
-        temp_columns (list): List of temperature columns
-        is_heat_analysis (bool): Whether to display heat or cold analysis metrics
-    """
-    analysis_type = "Heat" if is_heat_analysis else "Cold"
-    st.subheader(f"Temperature Visualization ({analysis_type} Analysis)")
-    
-    # Plot temperature trends
-    fig = plot_temperature_trends(df, temp_columns)
-    st.pyplot(fig)
-    
-    # Additional visualizations
-    st.subheader("Temperature Distribution")
-    
-    # Get available temperature columns
-    available_temp_cols = [col for col in temp_columns 
-                        if col in df.columns and not df[col].isna().all()]
-    
-    if not available_temp_cols:
-        st.warning("No temperature columns available for histogram visualization.")
-    else:
-        # Create a subplot for histograms of each temperature column
-        fig, axes = plt.subplots(1, len(available_temp_cols), figsize=(5 * len(available_temp_cols), 5))
+    try:
+        # Create a bar chart showing time spent above/below each threshold for each channel
+        fig, ax = plt.subplots(figsize=(min(12, max_figsize), min(6, max_figsize)), dpi=figure_dpi)
         
-        # Handle case with only one column
-        if len(available_temp_cols) == 1:
-            axes = [axes]
+        # Number of channels and thresholds
+        num_channels = len(available_temp_cols)
+        num_thresholds = len(threshold_list)
+        
+        # Set up bar positions
+        bar_width = 0.8 / num_channels
+        positions = np.arange(num_thresholds)
         
         for i, col in enumerate(available_temp_cols):
-            try:
-                axes[i].hist(df[col], bins=20, alpha=0.7)
-                axes[i].set_title(f'{col} Distribution')
-                axes[i].set_xlabel('Temperature (°C)')
-                axes[i].set_ylabel('Frequency')
+            if col in stats:
+                # Extract time spent above/below each threshold (in seconds)
+                times_above = []
+                for temp in threshold_list:
+                    key = time_key.format(temp=temp)
+                    if key in stats[col]:
+                        # Try to extract samples from format like "m:ss (n samples)"
+                        time_str = stats[col][key]
+                        try:
+                            samples = int(time_str.split('(')[1].split(' ')[0])
+                        except:
+                            samples = 0
+                        times_above.append(samples)
+                    else:
+                        times_above.append(0)
                 
-                # Add reference lines if stats are available
-                if col in stats:
-                    if 'Average' in stats[col]:
-                        axes[i].axvline(stats[col]['Average'], color='r', linestyle='--', label='Mean')
-                    if 'Mode' in stats[col]:
-                        axes[i].axvline(stats[col]['Mode'], color='g', linestyle='--', label='Mode')
-                    axes[i].legend()
-            except Exception as e:
-                st.error(f"Error creating histogram for {col}: {str(e)}")
+                # Plot the bars
+                bar_pos = positions + (i - num_channels/2 + 0.5) * bar_width
+                ax.bar(bar_pos, times_above, width=bar_width, label=col)
+        
+        # Set labels and title
+        ax.set_xlabel('Temperature Threshold (°C)')
+        ax.set_ylabel('Time (seconds)')
+        ax.set_title(f'Time Spent {"Above" if is_heat_analysis else "Below"} Temperature Thresholds')
+        ax.set_xticks(positions)
+        ax.set_xticklabels([f"{temp}°C" for temp in threshold_list])
+        ax.legend()
+        ax.grid(True, alpha=0.3, axis='y')
         
         plt.tight_layout()
-        st.pyplot(fig)
-    
-    # Add heating/cooling rate visualization
-    st.subheader("Temperature vs Time")
-    
-    # Create a line plot showing temperature over time
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    # Create x-axis for time (seconds)
-    x = np.arange(len(df))
-    
-    for col in available_temp_cols:
-        try:
-            ax.plot(x, df[col], marker='.', linestyle='-', label=col)
-        except Exception as e:
-            st.warning(f"Could not plot {col}: {str(e)}")
-    
-    # Add threshold lines
-    threshold_list = st.session_state.get('threshold_list', [29, 30, 31, 32, 33, 34])
-    for t in threshold_list:
-        ax.axhline(y=t, color='gray', linestyle='--', alpha=0.5)
-        ax.text(x.max(), t, f"{t}°C", va='center', ha='left', fontsize=8)
-    
-    ax.set_xlabel('Time (seconds)')
-    ax.set_ylabel('Temperature (°C)')
-    ax.set_title('Temperature Change Over Time')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    st.pyplot(fig)
-    
-    # Add rate of temperature change visualization
-    st.subheader("Rate of Temperature Change")
-    
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    for col in available_temp_cols:
-        try:
-            # Calculate temperature change rate (°C per second)
-            temp_values = df[col]
-            
-            # Calculate temperature change rate using rolling window
-            temp_diff = temp_values.diff()
-            
-            # Plot the rate of change
-            valid_mask = ~temp_diff.isna()
-            ax.plot(x[valid_mask], temp_diff[valid_mask], marker='.', label=f"{col} Rate")
-        except Exception as e:
-            st.warning(f"Could not calculate rate for {col}: {str(e)}")
-    
-    ax.set_xlabel('Time (seconds)')
-    ax.set_ylabel('Rate of Change (°C/second)')
-    ax.set_title('Temperature Change Rate')
-    ax.legend()
-    ax.grid(True, alpha=0.3)
-    
-    # Add horizontal line at y=0
-    ax.axhline(y=0, color='black', linestyle='-', alpha=0.3)
-    
-    plt.tight_layout()
-    st.pyplot(fig)
-    
-    # Add time-above/below-threshold visualization
-    if is_heat_analysis:
-        st.subheader("Time Spent Above Temperature Thresholds")
-        time_key = "Time above {temp}°C"
-    else:
-        st.subheader("Time Spent Below Temperature Thresholds")
-        time_key = "Time below {temp}°C"
-    
-    # Get thresholds
-    threshold_list = st.session_state.get('threshold_list', [29, 30, 31, 32, 33, 34])
-    
-    # Create a bar chart showing time spent above/below each threshold for each channel
-    fig, ax = plt.subplots(figsize=(12, 6))
-    
-    # Number of channels and thresholds
-    num_channels = len(available_temp_cols)
-    num_thresholds = len(threshold_list)
-    
-    # Set up bar positions
-    bar_width = 0.8 / num_channels
-    positions = np.arange(num_thresholds)
-    
-    for i, col in enumerate(available_temp_cols):
-        if col in stats:
-            # Extract time spent above/below each threshold (in seconds)
-            times_above = []
-            for temp in threshold_list:
-                key = time_key.format(temp=temp)
-                if key in stats[col]:
-                    # Try to extract samples from format like "m:ss (n samples)"
-                    time_str = stats[col][key]
-                    try:
-                        samples = int(time_str.split('(')[1].split(' ')[0])
-                    except:
-                        samples = 0
-                    times_above.append(samples)
-                else:
-                    times_above.append(0)
-            
-            # Plot the bars
-            bar_pos = positions + (i - num_channels/2 + 0.5) * bar_width
-            ax.bar(bar_pos, times_above, width=bar_width, label=col)
-    
-    # Set labels and title
-    ax.set_xlabel('Temperature Threshold (°C)')
-    ax.set_ylabel('Time (seconds)')
-    ax.set_title(f'Time Spent {"Above" if is_heat_analysis else "Below"} Temperature Thresholds')
-    ax.set_xticks(positions)
-    ax.set_xticklabels([f"{temp}°C" for temp in threshold_list])
-    ax.legend()
-    ax.grid(True, alpha=0.3, axis='y')
-    
-    plt.tight_layout()
-    st.pyplot(fig)
-
-# Add the main function - this is what was missing!
+        st.pyplot(fig, dpi=figure_dpi)
+    except Exception as e:
+        st.error(f"Error creating threshold bar chart: {str(e)}")
 
 def main():
     """
-    Main function to run the Streamlit app with support for multiple files.
+    Main function to run the Streamlit app with support for multiple files and file combination.
     """
     st.title("Temperature Analysis Tool")
     
@@ -998,8 +1006,24 @@ def main():
     else:
         st.sidebar.info("Cold Analysis: Measuring time **below** temperature thresholds and time to **reach below** thresholds.")
     
+    # Add custom thresholds input with different defaults based on analysis type
+    default_value = "38,41,43" if is_heat_analysis else "25,22,20"
+    
+    custom_thresholds = st.sidebar.text_input(
+        "Custom temperature thresholds (comma-separated, e.g., 29,31,33)", 
+        value=default_value
+    )
+    try:
+        # Parse custom thresholds
+        threshold_list = [float(t.strip()) for t in custom_thresholds.split(",") if t.strip()]
+        st.session_state['threshold_list'] = threshold_list
+    except:
+        st.sidebar.error("Invalid threshold format. Using default thresholds.")
+        threshold_list = [38, 41, 43] if is_heat_analysis else [25, 22, 20]
+        st.session_state['threshold_list'] = threshold_list
+    
+    # File upload section
     st.sidebar.header("Upload Data")
-    # Modified to accept multiple files
     uploaded_files = st.sidebar.file_uploader("Choose temperature data file(s)", type=['txt', 'csv'], accept_multiple_files=True)
     
     # Option to specify delimiter for CSV
@@ -1014,171 +1038,283 @@ def main():
     header_row_index = st.sidebar.number_input("Header row index (0-based)", min_value=0, value=3)
     data_start_row_index = st.sidebar.number_input("Data start row index (0-based)", min_value=0, value=5)
     
-    # Add column renaming section
-    st.sidebar.header("Column Renaming")
-    st.sidebar.write("Enter new names for the first 6 columns:")
-    
-    # Create input fields for column renaming
-    column_renames = {}
-    column_names = []
-    
-    # Get generic column names for renaming interface
-    # Default column names
-    column_names = [f"Column_{i+1}" for i in range(6)]
-    
-    # Create input fields for the first 6 columns
-    new_column_names = []
-    for i in range(6):
-        if i < len(column_names):
-            col_name = column_names[i]
-            new_name = st.sidebar.text_input(f"Column {i+1}: {col_name}", 
-                                           value="", 
-                                           key=f"col_rename_{i}")
-            if new_name.strip():
-                column_renames[col_name] = new_name
-                new_column_names.append(new_name)
-            else:
-                new_column_names.append(col_name)
-    
-    # Add custom thresholds input
-    custom_thresholds = st.sidebar.text_input(
-        "Custom temperature thresholds (comma-separated, e.g., 29,31,33)", 
-        value="38,41,43"
-    )
-    try:
-        # Parse custom thresholds
-        threshold_list = [float(t.strip()) for t in custom_thresholds.split(",") if t.strip()]
-        st.session_state['threshold_list'] = threshold_list
-    except:
-        st.sidebar.error("Invalid threshold format. Using default thresholds.")
-        threshold_list = [29, 30, 31, 32, 33, 34]
-        st.session_state['threshold_list'] = threshold_list
-    
     # Process data if files are uploaded
-    if uploaded_files:
-        # Create a dictionary to store processed data for each file
-        processed_files = {}
-        
-        # Process each uploaded file
-        for uploaded_file in uploaded_files:
-            try:
-                # Read the file
-                data_text = uploaded_file.getvalue().decode('utf-8')
-                
-                # First try parsing with pandas directly using specified delimiter
-                try:
-                    st.write(f"Processing file: **{uploaded_file.name}**")
-                    st.write("Attempting to read file with pandas...")
-                    buffer = io.StringIO(data_text)
-                    # FIX: Use header parameter correctly
-                    df = pd.read_csv(buffer, sep=delimiters[1], engine='python', header=header_row_index)
-                    
-                    # Apply column renaming if any columns were renamed
-                    if column_renames:
-                        # Note: This still has the issue with generic column names vs. actual column names
-                       if new_column_names:
-                        df.columns = pd.Index(new_column_names + list(df.columns[len(new_column_names):]))
-                    
-                    st.write(f"Successfully read file with pandas. Shape: {df.shape}")
-                    st.write("First 5 rows:")
-                    st.write(df.head())
-                    experiment_info = uploaded_file.name
-                except Exception as e:
-                    st.warning(f"Direct pandas read failed: {str(e)}")
-                    st.write("Falling back to custom parsing method...")
-                    df, experiment_info = process_data(data_text, header_row_index, data_start_row_index, column_renames)
-                
-                # Store the processed data
-                processed_files[uploaded_file.name] = {
-                    'df': df,
-                    'experiment_info': experiment_info
-                }
-                
-            except Exception as e:
-                st.error(f"Error processing file {uploaded_file.name}: {str(e)}")
-        
-        # Check if we have any processed files
-        if not processed_files:
-            st.error("No files could be processed. Please check your data format.")
-            return
-        
-        # Create a file selector
-        st.header("Select File to Analyze")
-        file_names = list(processed_files.keys())
-        selected_file = st.selectbox("Choose a file to view analysis", file_names)
-        
-        # Get the selected file's data
-        selected_data = processed_files[selected_file]
-        df = selected_data['df']
-        experiment_info = selected_data['experiment_info']
-        
-        # Identify temperature columns - first 4 channels
-        temp_columns = []
-        channel_count = 0
-        
-        for col in df.columns:
-            # Look for columns with 'Channel' in the name or temperature column names
-            if ('Channel' in col or 'temp' in col.lower() or '°C' in col) and channel_count < 4:
-                temp_columns.append(col)
-                channel_count += 1
-        
-        # If no specific temperature columns found, use first 4 numeric columns
-        if not temp_columns:
-            numeric_cols = df.select_dtypes(include=[np.number]).columns
-            temp_columns = list(numeric_cols)[:4]
-        
-        # ADD: Manual column selection for visualization
-        # Get all numeric columns as options
-        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-        # Filter out columns that look like time
-        numeric_cols = [col for col in numeric_cols if not any(word in str(col).lower() 
-                                                             for word in ['sample', 'time', 'second', 'minute'])]
-        
-        # Default to the auto-detected temperature columns
-        default_selections = temp_columns if all(col in numeric_cols for col in temp_columns) else numeric_cols[:min(4, len(numeric_cols))]
-        
-        # Add multiselect for columns
-        st.header("Select Columns for Visualization")
-        selected_columns = st.multiselect(
-            "Choose which columns to include in graphs and analysis:",
-            options=numeric_cols,
-            default=default_selections
-        )
-        
-        # Update temp_columns with user selection if any are selected
-        if selected_columns:
-            temp_columns = selected_columns
-            # Add this line to save selected columns to session state
-            st.session_state['temp_columns'] = temp_columns
-        
-        st.write(f"Using columns for visualization: {', '.join(temp_columns)}")
-        
-        # Display basic information
-        st.header("Temperature Analysis")
-        st.subheader(f"File: {selected_file}")
-        st.subheader(f"Data source: {experiment_info}")
-        st.write(f"Selected temperature channels: {', '.join(temp_columns)}")
-        analysis_mode = "Heat" if is_heat_analysis else "Cold"
-        st.write(f"Analysis mode: {analysis_mode}")
-        
-        # Calculate statistics based on selected analysis type
-        stats = calculate_statistics(df, is_heat_analysis)
-        
-        # Create tabs for different views
-        tab1, tab2, tab3 = st.tabs(["Data", "Statistics", "Visualization"])
-        
-        # Display content in each tab
-        with tab1:
-            display_data_tab(df, temp_columns)
-        
-        with tab2:
-            display_statistics_tab(df, stats, temp_columns, is_heat_analysis)
-        
-        with tab3:
-            display_visualization_tab(df, stats, temp_columns, is_heat_analysis)
-    else:
+    if not uploaded_files:
         st.info("Please upload one or more data files")
         return
+        
+    # Create a dictionary to store processed data for each file
+    processed_files = {}
     
+    # Process each uploaded file
+    for uploaded_file in uploaded_files:
+        try:
+            # Read the file
+            data_text = uploaded_file.getvalue().decode('utf-8')
+            
+            # Create a unique key for each file's column renaming section
+            file_key = uploaded_file.name.replace(".", "_").replace(" ", "_")
+            
+            # Add column renaming section for this file
+            with st.sidebar.expander(f"Rename columns for {uploaded_file.name}"):
+                st.write("Enter new names for the first 6 columns:")
+                
+                # Create input fields for column renaming
+                column_renames = {}
+                
+                # Default column names - these are just placeholders until we read the actual file
+                column_names = [f"Column_{i+1}" for i in range(6)]
+                
+                # Create input fields for the first 6 columns
+                new_column_names = []
+                for i in range(6):
+                    if i < len(column_names):
+                        col_name = column_names[i]
+                        new_name = st.text_input(f"Column {i+1}: {col_name}", 
+                                               value="", 
+                                               key=f"col_rename_{file_key}_{i}")
+                        if new_name.strip():
+                            column_renames[col_name] = new_name
+                            new_column_names.append(new_name)
+                        else:
+                            new_column_names.append(col_name)
+            
+            # First try parsing with pandas directly using specified delimiter
+            try:
+                st.write(f"Processing file: **{uploaded_file.name}**")
+                st.write("Attempting to read file with pandas...")
+                buffer = io.StringIO(data_text)
+                # Use the selected delimiter, or None for auto-detection
+                delimiter = delimiters[1] if delimiters[0] != "Auto-detect" else None
+                df = pd.read_csv(buffer, sep=delimiter, engine='python', skiprows=header_row_index)
+                
+                # Check if the column names from the actual file 
+                # are different from our placeholders
+                actual_column_names = df.columns.tolist()
+                updated_column_renames = {}
+                
+                # Map user-provided names to actual column names
+                for i, new_name in enumerate(new_column_names):
+                    if i < len(actual_column_names) and new_name != column_names[i]:
+                        updated_column_renames[actual_column_names[i]] = new_name
+                
+                # Apply column renaming if any columns were renamed
+                if updated_column_renames:
+                    df = df.rename(columns=updated_column_renames)
+                    st.write("Columns renamed successfully!")
+                
+                st.write(f"Successfully read file with pandas. Shape: {df.shape}")
+                st.write("First 5 rows:")
+                st.write(df.head())
+                experiment_info = uploaded_file.name
+            except Exception as e:
+                st.warning(f"Direct pandas read failed: {str(e)}")
+                st.write("Falling back to manual parsing method...")
+                df, experiment_info = process_data(data_text, header_row_index, data_start_row_index, column_renames)
+            
+            # Store the processed data
+            processed_files[uploaded_file.name] = {
+                'df': df,
+                'experiment_info': experiment_info
+            }
+            
+        except Exception as e:
+            st.error(f"Error processing file {uploaded_file.name}: {str(e)}")
+    
+    # Check if we have any processed files
+    if not processed_files:
+        st.error("No files could be processed. Please check your data format.")
+        return
+    
+    # New feature: File combination option
+    if len(processed_files) > 1:  # Only show if multiple files are uploaded
+        st.sidebar.header("File Combination")
+        enable_combination = st.sidebar.checkbox("Enable file combination", value=False)
+        
+        if enable_combination:
+            st.sidebar.subheader("Select files to combine")
+            file_names = list(processed_files.keys())
+            
+            # Allow selecting which files to combine
+            selected_files = st.sidebar.multiselect(
+                "Select files to combine",
+                options=file_names,
+                default=file_names
+            )
+            
+            # For each selected file, allow selecting which columns to include
+            column_selections = {}
+            if selected_files:
+                st.sidebar.subheader("Select columns to combine")
+                
+                for file_name in selected_files:
+                    file_data = processed_files[file_name]
+                    df = file_data['df']
+                    
+                    with st.sidebar.expander(f"Columns from {file_name}"):
+                        # Find numeric columns that might be temperature data
+                        numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+                        # Filter out columns that look like time/sample
+                        numeric_cols = [col for col in numeric_cols if not any(word in str(col).lower() 
+                                                                        for word in ['sample', 'time', 'second', 'minute'])]
+                        
+                        # Select columns to include
+                        selected_cols = st.multiselect(
+                            f"Select columns from {file_name}",
+                            options=df.columns.tolist(),
+                            default=numeric_cols[:min(6, len(numeric_cols))],
+                            key=f"select_cols_{file_name.replace('.', '_').replace(' ', '_')}"
+                        )
+                        
+                        column_selections[file_name] = selected_cols
+                
+                # Add a button to trigger the combination
+                if st.sidebar.button("Combine Selected Files"):
+                    # Combine the files
+                    combined_df, combined_info = merge_selected_files(
+                        processed_files, 
+                        selected_files, 
+                        column_selections
+                    )
+                    
+                    if not combined_df.empty:
+                        # Add the combined file to processed_files
+                        combined_file_name = "Combined_Data"
+                        processed_files[combined_file_name] = {
+                            'df': combined_df,
+                            'experiment_info': combined_info
+                        }
+                        
+                        st.success(f"Created combined file: {combined_file_name}")
+                        # Store in session state that we've selected this file
+                        st.session_state['selected_file'] = combined_file_name
+
+                    if "Combined_Data" in processed_files:
+                        combined_df = processed_files["Combined_Data"]['df']
+                        
+                        # Get all numeric columns except Sample as potential temperature columns
+                        numeric_cols = combined_df.select_dtypes(include=[np.number]).columns.tolist()
+                        if 'Sample' in numeric_cols:
+                            numeric_cols.remove('Sample')
+                        
+                        # Store as temperature columns for the combined file
+                        if numeric_cols:
+                            st.write("Setting temperature columns for combined data:", numeric_cols)
+                            st.session_state['combined_temp_columns'] = numeric_cols
+                        else:
+                            st.error("No numeric columns found in combined data")
+
+    
+    # Create a file selector
+    st.header("Select File to Analyze")
+    file_names = list(processed_files.keys())
+    
+    # Make sure we have files to work with
+    if not file_names:
+        st.error("No processed files available.")
+        return
+    
+    # Default to the combined file if it exists and was just created
+    default_file = st.session_state.get('selected_file', file_names[0])
+    if default_file not in file_names:
+        default_file = file_names[0]
+    
+    # Always define selected_file outside of any conditional blocks
+    selected_file = st.selectbox("Choose a file to view analysis", 
+                              file_names,
+                              index=file_names.index(default_file))
+    
+    # Update session state with current selection
+    st.session_state['selected_file'] = selected_file
+    
+    # For combined data in cold analysis mode, adjust thresholds if needed
+    if selected_file == "Combined_Data" and not is_heat_analysis:
+        # Check if we're using the default heat thresholds
+        current_thresholds = st.session_state.get('threshold_list', [])
+        if all(t >= 35 for t in current_thresholds):  # If using high thresholds in cold mode
+            # Set appropriate cold thresholds
+            cold_thresholds = [8, 10, 12]
+            st.session_state['threshold_list'] = cold_thresholds
+            st.sidebar.info("Automatically adjusted thresholds for cold analysis. You can modify these in the sidebar.")
+    
+    # Check if selected file exists in processed_files
+    if selected_file not in processed_files:
+        st.error(f"Selected file '{selected_file}' not found in processed files.")
+        return
+    
+    # Get the selected file's data
+    selected_data = processed_files[selected_file]
+    df = selected_data['df']
+    experiment_info = selected_data['experiment_info']
+    
+    # Identify temperature columns - first 4 channels
+    temp_columns = []
+    channel_count = 0
+    
+    for col in df.columns:
+        # Look for columns with 'Channel' in the name or temperature column names
+        if ('Channel' in col or 'temp' in col.lower() or '°C' in col) and channel_count < 4:
+            temp_columns.append(col)
+            channel_count += 1
+    
+    # If no specific temperature columns found, use first 4 numeric columns
+    if not temp_columns:
+        numeric_cols = df.select_dtypes(include=[np.number]).columns
+        # Filter out columns that look like time/sample
+        numeric_cols = [col for col in numeric_cols if not any(word in str(col).lower() 
+                                                           for word in ['sample', 'time', 'second', 'minute'])]
+        temp_columns = list(numeric_cols)[:4]
+    
+    # Manual column selection for visualization
+    # Get all numeric columns as options
+    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
+    # Filter out columns that look like time
+    numeric_cols = [col for col in numeric_cols if not any(word in str(col).lower() 
+                                                        for word in ['sample', 'time', 'second', 'minute'])]
+    
+    # Default to the auto-detected temperature columns
+    default_selections = temp_columns if all(col in numeric_cols for col in temp_columns) else numeric_cols[:min(4, len(numeric_cols))]
+    
+    # Add multiselect for columns
+    st.header("Select Columns for Visualization")
+    selected_columns = st.multiselect(
+        "Choose which columns to include in graphs and analysis:",
+        options=numeric_cols,
+        default=default_selections
+    )
+    
+    # Update temp_columns with user selection if any are selected
+    if selected_columns:
+        temp_columns = selected_columns
+        # Add this line to save selected columns to session state
+        st.session_state['temp_columns'] = temp_columns
+    
+    st.write(f"Using columns for visualization: {', '.join(temp_columns)}")
+    
+    # Display basic information
+    st.header("Temperature Analysis")
+    st.subheader(f"File: {selected_file}")
+    st.subheader(f"Data source: {experiment_info}")
+    st.write(f"Selected temperature channels: {', '.join(temp_columns)}")
+    analysis_mode = "Heat" if is_heat_analysis else "Cold"
+    st.write(f"Analysis mode: {analysis_mode}")
+    
+    # Calculate statistics based on selected analysis type
+    stats = calculate_statistics(df, is_heat_analysis)
+    
+    # Create tabs for different views
+    tab1, tab2, tab3 = st.tabs(["Data", "Statistics", "Visualization"])
+    
+    # Display content in each tab
+    with tab1:
+        display_data_tab(df, temp_columns)
+    
+    with tab2:
+        display_statistics_tab(df, stats, temp_columns, is_heat_analysis)
+    
+    with tab3:
+        display_visualization_tab(df, stats, temp_columns, is_heat_analysis)
+
+# Run the application
 if __name__ == "__main__":
     main()
