@@ -502,45 +502,43 @@ def calculate_statistics(df, is_heat_analysis=True):
     # Get temperature columns from session state if available
     temp_columns = st.session_state.get('temp_columns', [])
     
+    # If this is a combined dataset, check for combined columns
+    is_combined = "Combined_Data" in st.session_state.get('selected_file', '')
+    if is_combined:
+        combined_columns = st.session_state.get('combined_temp_columns', [])
+        if combined_columns:
+            temp_columns = combined_columns
+            st.write(f"Using combined data columns: {temp_columns}")
+    
     # If no columns were set, try to find some reasonable defaults
     if not temp_columns:
-        # Get temperature column names - use first 4 channels
+        # Get temperature column names - REMOVED the 4-channel limit
         temp_columns = []
-        channel_count = 0
         
         # First, try to find columns with expected temperature names
         for col in df.columns:
             col_str = str(col).lower()
             # Look for columns with temperature-related names
-            if ('channel' in col_str and ('1' in col_str or '2' in col_str or '3' in col_str or '4' in col_str)) or \
-               ('temp' in col_str) or ('°c' in col_str) or ('temperature' in col_str):
+            if ('channel' in col_str) or ('temp' in col_str) or ('°c' in col_str) or ('temperature' in col_str):
                 # Make sure it's numeric
                 if pd.api.types.is_numeric_dtype(df[col]):
                     temp_columns.append(col)
-                    channel_count += 1
-                    if channel_count >= 4:  # Limit to 4 channels
-                        break
         
-        # If we couldn't find 4 columns that way, use the first 4 numeric columns
-        if channel_count < 4:
-            st.warning(f"Only found {channel_count} specific temperature columns. Adding more from numeric columns.")
+        # If we couldn't find any columns that way, use all numeric columns
+        if not temp_columns:
+            st.warning("No specific temperature columns found. Using all numeric columns.")
             numeric_cols = df.select_dtypes(include=[np.number]).columns
             for col in numeric_cols:
-                if col not in temp_columns and channel_count < 4:
-                    # Skip columns that look like sample numbers or time
-                    col_str = str(col).lower()
-                    if 'sample' in col_str or 'time' in col_str or 'second' in col_str or 'minute' in col_str:
-                        continue
-                    temp_columns.append(col)
-                    channel_count += 1
-                    if channel_count >= 4:
-                        break
+                # Skip columns that look like sample numbers or time
+                col_str = str(col).lower()
+                if 'sample' in col_str or 'time' in col_str or 'second' in col_str or 'minute' in col_str:
+                    continue
+                temp_columns.append(col)
     
     st.write(f"Using channels for statistics: {temp_columns}")
     
     # Store the columns for use in other functions
     st.session_state['temp_columns'] = temp_columns
-    
     
     # Calculate statistics for each column
     for col in temp_columns:
@@ -567,7 +565,7 @@ def calculate_statistics(df, is_heat_analysis=True):
             stats_results[col]['Mode'] = most_common
         
         # Define thresholds for temperature goals
-        thresholds = st.session_state.get('threshold_list', [29, 30, 31, 32, 33, 34])
+        thresholds = st.session_state.get('threshold_list', [38,41,43])
         
         # Calculate time to reach each threshold
         for temp in thresholds:
@@ -614,7 +612,7 @@ def plot_temperature_trends(df, temp_columns):
         return fig
     
     # Limit figure size to prevent oversized plots
-    figsize = (min(12, len(df) * 0.01), 6)
+    figsize = (min(14, len(df) * 0.01), 8)
     fig, ax = plt.subplots(figsize=figsize)
     
     # Create x-axis for time (seconds)
@@ -623,24 +621,34 @@ def plot_temperature_trends(df, temp_columns):
     # Determine appropriate marker frequency to avoid overcrowding
     marker_every = max(1, len(x) // 100)
     
+    # Color cycle for better differentiation with many channels
+    colors = plt.cm.tab20(np.linspace(0, 1, len(temp_columns)))
+    
     # Plot each temperature column that exists
-    for col in temp_columns:
+    for i, col in enumerate(temp_columns):
         if col in df.columns and not df[col].isna().all():
             try:
                 # Use markevery to reduce the number of markers for large datasets
-                ax.plot(x, df[col], label=col, markevery=marker_every)
+                ax.plot(x, df[col], label=col, markevery=marker_every, 
+                        color=colors[i % len(colors)])
             except Exception as e:
                 st.warning(f"Could not plot {col}: {str(e)}")
     
     ax.set_xlabel('Time (seconds)')
     ax.set_ylabel('Temperature (°C)')
     ax.set_title('Temperature Trends')
-    ax.legend()
+    
+    # Improve legend layout for many columns
+    if len(temp_columns) > 8:
+        ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.12), 
+                  ncol=min(6, len(temp_columns)), fontsize='small')
+    else:
+        ax.legend()
+    
     ax.grid(True)
     
     return fig
 
-# Adding the missing display_data_tab function
 def display_data_tab(df, temp_columns):
     """
     Display data in the Data tab.
@@ -688,9 +696,37 @@ def display_statistics_tab(df, stats, temp_columns, is_heat_analysis=True):
     analysis_type = "Heat" if is_heat_analysis else "Cold"
     st.subheader(f"Temperature Statistics ({analysis_type} Analysis)")
     
+    # If there are many columns, we may need to paginate the statistics
+    # or allow selecting a subset of columns to view
+    if len(temp_columns) > 6:
+        st.info(f"You have {len(temp_columns)} temperature channels. "
+                f"Consider selecting fewer channels for clearer analysis.")
+        
+        # Option to filter columns for statistics view
+        show_all_stats = st.checkbox("Show statistics for all columns", value=False)
+        
+        if not show_all_stats:
+            # Allow selecting a subset of columns
+            selected_for_stats = st.multiselect(
+                "Select columns to show statistics for:",
+                options=temp_columns,
+                default=temp_columns[:min(6, len(temp_columns))]
+            )
+            
+            if selected_for_stats:
+                # Filter stats to only selected columns
+                filtered_stats = {col: stats[col] for col in selected_for_stats if col in stats}
+                stats_to_display = filtered_stats
+            else:
+                stats_to_display = stats
+        else:
+            stats_to_display = stats
+    else:
+        stats_to_display = stats
+    
     # Convert stats to DataFrame for display
     stats_df = pd.DataFrame({key: {k: v for k, v in values.items()} 
-                          for key, values in stats.items()}).T
+                          for key, values in stats_to_display.items()}).T
     
     st.dataframe(stats_df)
     
@@ -698,7 +734,9 @@ def display_statistics_tab(df, stats, temp_columns, is_heat_analysis=True):
     report = io.StringIO()
     report.write(f"Temperature Analysis Report - {analysis_type} Analysis\n\n")
     
-    stats_df.to_csv(report)
+    # Convert all stats (not just filtered ones) to CSV for the report
+    pd.DataFrame({key: {k: v for k, v in values.items()} 
+               for key, values in stats.items()}).T.to_csv(report)
     
     st.download_button(
         label=f"Download {analysis_type} Statistics Report",
@@ -708,7 +746,7 @@ def display_statistics_tab(df, stats, temp_columns, is_heat_analysis=True):
     )
     
     # Get thresholds
-    threshold_list = st.session_state.get('threshold_list', [29, 30, 31, 32, 33, 34])
+    threshold_list = st.session_state.get('threshold_list', [38,41,43])
     
     # Add time-to-temperature visualization
     if is_heat_analysis:
@@ -723,7 +761,7 @@ def display_statistics_tab(df, stats, temp_columns, is_heat_analysis=True):
     for temp in threshold_list:
         time_data[f"{temp}°C"] = {}
         key = time_key_pattern.format(temp=temp)
-        for col in temp_columns:
+        for col in stats_to_display:
             if col in stats:
                 if key in stats[col]:
                     time_data[f"{temp}°C"][col] = stats[col][key]
@@ -748,7 +786,7 @@ def display_statistics_tab(df, stats, temp_columns, is_heat_analysis=True):
     for temp in threshold_list:
         time_above_data[f"{temp}°C"] = {}
         key = time_above_key.format(temp=temp)
-        for col in temp_columns:
+        for col in stats_to_display:
             if col in stats:
                 if key in stats[col]:
                     time_above_data[f"{temp}°C"][col] = stats[col][key]
@@ -773,7 +811,7 @@ def display_statistics_tab(df, stats, temp_columns, is_heat_analysis=True):
     for temp in threshold_list:
         percentage_above_data[f"{temp}°C"] = {}
         key = percentage_key.format(temp=temp)
-        for col in temp_columns:
+        for col in stats_to_display:
             if col in stats:
                 if key in stats[col]:
                     percentage_above_data[f"{temp}°C"][col] = stats[col][key]
@@ -792,8 +830,37 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
     st.subheader(f"Temperature Visualization ({analysis_type} Analysis)")
     
     # Set a reasonable maximum figure size and control DPI
-    max_figsize = 12
+    max_figsize = 14
     figure_dpi = 100
+    
+    # Handle many columns for visualization
+    if len(temp_columns) > 8:
+        st.info(f"You have {len(temp_columns)} temperature channels. For clearer visualizations, "
+                f"consider selecting a subset of channels to display.")
+        
+        # Allow selecting a subset of columns for visualization
+        show_all_viz = st.checkbox("Show all channels in visualizations", value=False)
+        
+        if not show_all_viz:
+            # Get available temperature columns
+            available_temp_cols = [col for col in temp_columns 
+                                if col in df.columns and not df[col].isna().all()]
+            
+            # Allow selecting a subset of columns for visualization
+            selected_for_viz = st.multiselect(
+                "Select columns to visualize:",
+                options=available_temp_cols,
+                default=available_temp_cols[:min(6, len(available_temp_cols))]
+            )
+            
+            if selected_for_viz:
+                viz_columns = selected_for_viz
+            else:
+                viz_columns = temp_columns
+        else:
+            viz_columns = temp_columns
+    else:
+        viz_columns = temp_columns
     
     # Limit the number of data points to prevent oversized plots
     max_data_points = 10000
@@ -807,8 +874,8 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
     
     # Plot temperature trends with controlled figure size and DPI
     try:
-        # Modified function call to plot_temperature_trends 
-        fig = plot_temperature_trends(df_plot, temp_columns)
+        # Modified function call to plot_temperature_trends with selected columns
+        fig = plot_temperature_trends(df_plot, viz_columns)
         st.pyplot(fig, dpi=figure_dpi)
     except Exception as e:
         st.error(f"Error creating temperature trends plot: {str(e)}")
@@ -817,7 +884,7 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
     st.subheader("Temperature Distribution")
     
     # Get available temperature columns
-    available_temp_cols = [col for col in temp_columns 
+    available_temp_cols = [col for col in viz_columns 
                         if col in df.columns and not df[col].isna().all()]
     
     if not available_temp_cols:
@@ -825,27 +892,40 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
     else:
         try:
             # Limit the number of columns to display to prevent oversized figures
-            max_cols_to_display = 4
+            max_cols_to_display = 14
             if len(available_temp_cols) > max_cols_to_display:
                 st.warning(f"Limiting histogram display to {max_cols_to_display} columns.")
                 display_cols = available_temp_cols[:max_cols_to_display]
             else:
                 display_cols = available_temp_cols
                 
-            # Create a subplot for histograms with controlled size
-            fig_width = min(5 * len(display_cols), max_figsize)
-            fig, axes = plt.subplots(1, len(display_cols), figsize=(fig_width, 5), dpi=figure_dpi)
+            # Create a subplot grid for histograms with controlled size
+            # Calculate best grid layout based on number of columns
+            if len(display_cols) <= 16:
+                n_rows, n_cols = 1, len(display_cols)
+            else:
+                n_rows = (len(display_cols) + 3) // 4  # Ceiling division
+                n_cols = min(4, len(display_cols))
+            
+            fig_width = min(4 * n_cols, max_figsize)
+            fig_height = min(3 * n_rows, max_figsize)
+            
+            fig, axes = plt.subplots(n_rows, n_cols, figsize=(fig_width, fig_height), dpi=figure_dpi)
             
             # Handle case with only one column
             if len(display_cols) == 1:
-                axes = [axes]
+                axes = np.array([axes])
+            
+            # Flatten the axes array for easier indexing
+            axes = np.array(axes).flatten()
             
             for i, col in enumerate(display_cols):
                 try:
                     axes[i].hist(df_plot[col], bins=20, alpha=0.7)
-                    axes[i].set_title(f'{col} Distribution')
-                    axes[i].set_xlabel('Temperature (°C)')
-                    axes[i].set_ylabel('Frequency')
+                    axes[i].set_title(f'{col}', fontsize=9)
+                    axes[i].set_xlabel('Temperature (°C)', fontsize=8)
+                    axes[i].set_ylabel('Frequency', fontsize=8)
+                    axes[i].tick_params(axis='both', which='major', labelsize=7)
                     
                     # Add reference lines if stats are available
                     if col in stats:
@@ -853,9 +933,13 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
                             axes[i].axvline(stats[col]['Average'], color='r', linestyle='--', label='Mean')
                         if 'Mode' in stats[col]:
                             axes[i].axvline(stats[col]['Mode'], color='g', linestyle='--', label='Mode')
-                        axes[i].legend()
+                        axes[i].legend(fontsize=7)
                 except Exception as e:
                     st.error(f"Error creating histogram for {col}: {str(e)}")
+            
+            # Hide unused subplots
+            for i in range(len(display_cols), len(axes)):
+                axes[i].set_visible(False)
             
             plt.tight_layout()
             st.pyplot(fig, dpi=figure_dpi)
@@ -867,19 +951,24 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
     
     try:
         # Create a line plot showing temperature over time with limited size
-        fig, ax = plt.subplots(figsize=(min(12, max_figsize), min(8, max_figsize)), dpi=figure_dpi)
+        fig, ax = plt.subplots(figsize=(min(14, max_figsize), min(8, max_figsize)), dpi=figure_dpi)
         
         # Create x-axis for time (seconds)
         x = np.arange(len(df_plot))
         
-        for col in available_temp_cols:
+        # Color cycle for many channels
+        colors = plt.cm.tab20(np.linspace(0, 1, len(available_temp_cols)))
+        
+        for i, col in enumerate(available_temp_cols):
             try:
-                ax.plot(x, df_plot[col], marker='.', linestyle='-', label=col, markevery=max(1, len(x)//100))
+                ax.plot(x, df_plot[col], marker='.', linestyle='-', 
+                        label=col, markevery=max(1, len(x)//100),
+                        color=colors[i % len(colors)])
             except Exception as e:
                 st.warning(f"Could not plot {col}: {str(e)}")
         
         # Add threshold lines
-        threshold_list = st.session_state.get('threshold_list', [29, 30, 31, 32, 33, 34])
+        threshold_list = st.session_state.get('threshold_list', [38,41,43])
         for t in threshold_list:
             ax.axhline(y=t, color='gray', linestyle='--', alpha=0.5)
             ax.text(x.max(), t, f"{t}°C", va='center', ha='left', fontsize=8)
@@ -887,7 +976,14 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
         ax.set_xlabel('Time (seconds)')
         ax.set_ylabel('Temperature (°C)')
         ax.set_title('Temperature Change Over Time')
-        ax.legend()
+        
+        # Improve legend layout for many columns
+        if len(available_temp_cols) > 8:
+            ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.12), 
+                      ncol=min(6, len(available_temp_cols)), fontsize='small')
+        else:
+            ax.legend()
+            
         ax.grid(True, alpha=0.3)
         
         plt.tight_layout()
@@ -899,9 +995,12 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
     st.subheader("Rate of Temperature Change")
     
     try:
-        fig, ax = plt.subplots(figsize=(min(12, max_figsize), min(6, max_figsize)), dpi=figure_dpi)
+        fig, ax = plt.subplots(figsize=(min(14, max_figsize), min(8, max_figsize)), dpi=figure_dpi)
         
-        for col in available_temp_cols:
+        # Color cycle for many channels
+        colors = plt.cm.tab20(np.linspace(0, 1, len(available_temp_cols)))
+        
+        for i, col in enumerate(available_temp_cols):
             try:
                 # Calculate temperature change rate (°C per second)
                 temp_values = df_plot[col]
@@ -912,14 +1011,22 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
                 # Plot the rate of change
                 valid_mask = ~temp_diff.isna()
                 ax.plot(x[valid_mask], temp_diff[valid_mask], marker='.', 
-                        label=f"{col} Rate", markevery=max(1, len(x)//100))
+                        label=f"{col} Rate", markevery=max(1, len(x)//100),
+                        color=colors[i % len(colors)])
             except Exception as e:
                 st.warning(f"Could not calculate rate for {col}: {str(e)}")
         
         ax.set_xlabel('Time (seconds)')
         ax.set_ylabel('Rate of Change (°C/second)')
         ax.set_title('Temperature Change Rate')
-        ax.legend()
+        
+        # Improve legend layout for many columns
+        if len(available_temp_cols) > 8:
+            ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.12), 
+                      ncol=min(6, len(available_temp_cols)), fontsize='small')
+        else:
+            ax.legend()
+            
         ax.grid(True, alpha=0.3)
         
         # Add horizontal line at y=0
@@ -943,7 +1050,7 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
     
     try:
         # Create a bar chart showing time spent above/below each threshold for each channel
-        fig, ax = plt.subplots(figsize=(min(12, max_figsize), min(6, max_figsize)), dpi=figure_dpi)
+        fig, ax = plt.subplots(figsize=(min(14, max_figsize), min(8, max_figsize)), dpi=figure_dpi)
         
         # Number of channels and thresholds
         num_channels = len(available_temp_cols)
@@ -952,6 +1059,9 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
         # Set up bar positions
         bar_width = 0.8 / num_channels
         positions = np.arange(num_thresholds)
+        
+        # Color cycle for many channels
+        colors = plt.cm.tab20(np.linspace(0, 1, num_channels))
         
         for i, col in enumerate(available_temp_cols):
             if col in stats:
@@ -972,7 +1082,8 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
                 
                 # Plot the bars
                 bar_pos = positions + (i - num_channels/2 + 0.5) * bar_width
-                ax.bar(bar_pos, times_above, width=bar_width, label=col)
+                ax.bar(bar_pos, times_above, width=bar_width, label=col, 
+                       color=colors[i % len(colors)])
         
         # Set labels and title
         ax.set_xlabel('Temperature Threshold (°C)')
@@ -980,7 +1091,14 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
         ax.set_title(f'Time Spent {"Above" if is_heat_analysis else "Below"} Temperature Thresholds')
         ax.set_xticks(positions)
         ax.set_xticklabels([f"{temp}°C" for temp in threshold_list])
-        ax.legend()
+        
+        # Improve legend layout for many columns
+        if len(available_temp_cols) > 8:
+            ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.12), 
+                      ncol=min(6, len(available_temp_cols)), fontsize='small')
+        else:
+            ax.legend()
+            
         ax.grid(True, alpha=0.3, axis='y')
         
         plt.tight_layout()
@@ -1007,7 +1125,7 @@ def main():
         st.sidebar.info("Cold Analysis: Measuring time **below** temperature thresholds and time to **reach below** thresholds.")
     
     # Add custom thresholds input with different defaults based on analysis type
-    default_value = "38,41,43" if is_heat_analysis else "25,22,20"
+    default_value = "38,41,43" if is_heat_analysis else "8,10,12"
     
     custom_thresholds = st.sidebar.text_input(
         "Custom temperature thresholds (comma-separated, e.g., 29,31,33)", 
@@ -1019,7 +1137,7 @@ def main():
         st.session_state['threshold_list'] = threshold_list
     except:
         st.sidebar.error("Invalid threshold format. Using default thresholds.")
-        threshold_list = [38, 41, 43] if is_heat_analysis else [25, 22, 20]
+        threshold_list = [38, 41, 43] if is_heat_analysis else [8,10,12]
         st.session_state['threshold_list'] = threshold_list
     
     # File upload section
@@ -1247,23 +1365,29 @@ def main():
     df = selected_data['df']
     experiment_info = selected_data['experiment_info']
     
-    # Identify temperature columns - first 4 channels
+    # Check if this is the combined file
+    is_combined = selected_file == "Combined_Data"
+    
+    # Identify temperature columns - get all temperature-related columns
     temp_columns = []
-    channel_count = 0
     
-    for col in df.columns:
-        # Look for columns with 'Channel' in the name or temperature column names
-        if ('Channel' in col or 'temp' in col.lower() or '°C' in col) and channel_count < 4:
-            temp_columns.append(col)
-            channel_count += 1
-    
-    # If no specific temperature columns found, use first 4 numeric columns
-    if not temp_columns:
-        numeric_cols = df.select_dtypes(include=[np.number]).columns
-        # Filter out columns that look like time/sample
-        numeric_cols = [col for col in numeric_cols if not any(word in str(col).lower() 
-                                                           for word in ['sample', 'time', 'second', 'minute'])]
-        temp_columns = list(numeric_cols)[:4]
+    # For combined data, use all numeric columns (except Sample)
+    if is_combined and 'combined_temp_columns' in st.session_state:
+        temp_columns = st.session_state['combined_temp_columns']
+    else:
+        # Otherwise, look for typical temperature columns
+        for col in df.columns:
+            # Look for columns with temperature-related names
+            if ('Channel' in col or 'temp' in col.lower() or '°C' in col):
+                temp_columns.append(col)
+        
+        # If no specific temperature columns found, use all numeric columns
+        if not temp_columns:
+            numeric_cols = df.select_dtypes(include=[np.number]).columns
+            # Filter out columns that look like time/sample
+            numeric_cols = [col for col in numeric_cols if not any(word in str(col).lower() 
+                                                               for word in ['sample', 'time', 'second', 'minute'])]
+            temp_columns = list(numeric_cols)
     
     # Manual column selection for visualization
     # Get all numeric columns as options
@@ -1273,7 +1397,7 @@ def main():
                                                         for word in ['sample', 'time', 'second', 'minute'])]
     
     # Default to the auto-detected temperature columns
-    default_selections = temp_columns if all(col in numeric_cols for col in temp_columns) else numeric_cols[:min(4, len(numeric_cols))]
+    default_selections = temp_columns if all(col in numeric_cols for col in temp_columns) else numeric_cols
     
     # Add multiselect for columns
     st.header("Select Columns for Visualization")
