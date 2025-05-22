@@ -605,7 +605,7 @@ def plot_temperature_trends(df, temp_columns):
     # Check if DataFrame is empty
     if df.empty:
         # Return empty figure if no data
-        fig, ax = plt.subplots(figsize=(12, 6))
+        fig, ax = plt.subplots(figsize=(8, 6))
         ax.text(0.5, 0.5, 'No data to plot', 
                 horizontalalignment='center', verticalalignment='center',
                 transform=ax.transAxes, fontsize=14)
@@ -641,7 +641,7 @@ def plot_temperature_trends(df, temp_columns):
     # Improve legend layout for many columns
     if len(temp_columns) > 8:
         ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.12), 
-                  ncol=min(6, len(temp_columns)), fontsize='small')
+                  ncol=min(8, len(temp_columns)), fontsize='small')
     else:
         ax.legend()
     
@@ -698,7 +698,7 @@ def display_statistics_tab(df, stats, temp_columns, is_heat_analysis=True):
     
     # If there are many columns, we may need to paginate the statistics
     # or allow selecting a subset of columns to view
-    if len(temp_columns) > 6:
+    if len(temp_columns) > 8:
         st.info(f"You have {len(temp_columns)} temperature channels. "
                 f"Consider selecting fewer channels for clearer analysis.")
         
@@ -710,7 +710,7 @@ def display_statistics_tab(df, stats, temp_columns, is_heat_analysis=True):
             selected_for_stats = st.multiselect(
                 "Select columns to show statistics for:",
                 options=temp_columns,
-                default=temp_columns[:min(6, len(temp_columns))]
+                default=temp_columns[:min(8, len(temp_columns))]
             )
             
             if selected_for_stats:
@@ -850,7 +850,7 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
             selected_for_viz = st.multiselect(
                 "Select columns to visualize:",
                 options=available_temp_cols,
-                default=available_temp_cols[:min(6, len(available_temp_cols))]
+                default=available_temp_cols[:min(8, len(available_temp_cols))]
             )
             
             if selected_for_viz:
@@ -980,7 +980,7 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
         # Improve legend layout for many columns
         if len(available_temp_cols) > 8:
             ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.12), 
-                      ncol=min(6, len(available_temp_cols)), fontsize='small')
+                      ncol=min(8, len(available_temp_cols)), fontsize='small')
         else:
             ax.legend()
             
@@ -1023,7 +1023,7 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
         # Improve legend layout for many columns
         if len(available_temp_cols) > 8:
             ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.12), 
-                      ncol=min(6, len(available_temp_cols)), fontsize='small')
+                      ncol=min(8, len(available_temp_cols)), fontsize='small')
         else:
             ax.legend()
             
@@ -1095,7 +1095,7 @@ def display_visualization_tab(df, stats, temp_columns, is_heat_analysis=True):
         # Improve legend layout for many columns
         if len(available_temp_cols) > 8:
             ax.legend(loc='upper center', bbox_to_anchor=(0.5, -0.12), 
-                      ncol=min(6, len(available_temp_cols)), fontsize='small')
+                      ncol=min(8, len(available_temp_cols)), fontsize='small')
         else:
             ax.legend()
             
@@ -1175,17 +1175,17 @@ def main():
             
             # Add column renaming section for this file
             with st.sidebar.expander(f"Rename columns for {uploaded_file.name}"):
-                st.write("Enter new names for the first 6 columns:")
+                st.write("Enter new names for the first 8 columns:")
                 
                 # Create input fields for column renaming
                 column_renames = {}
                 
                 # Default column names - these are just placeholders until we read the actual file
-                column_names = [f"Column_{i+1}" for i in range(6)]
+                column_names = [f"Column_{i+1}" for i in range(8)]
                 
                 # Create input fields for the first 6 columns
                 new_column_names = []
-                for i in range(6):
+                for i in range(8):
                     if i < len(column_names):
                         col_name = column_names[i]
                         new_name = st.text_input(f"Column {i+1}: {col_name}", 
@@ -1280,7 +1280,7 @@ def main():
                         selected_cols = st.multiselect(
                             f"Select columns from {file_name}",
                             options=df.columns.tolist(),
-                            default=numeric_cols[:min(6, len(numeric_cols))],
+                            default=numeric_cols[:min(8, len(numeric_cols))],
                             key=f"select_cols_{file_name.replace('.', '_').replace(' ', '_')}"
                         )
                         
